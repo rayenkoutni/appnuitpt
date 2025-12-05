@@ -1,4 +1,4 @@
-# nuit_info_scraper_clean.py
+# nuit_info_scraper_fixed.py
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -15,10 +15,12 @@ class NuitInfoScraper:
         self.session = requests.Session()
         self.teams_data = {}
         self.challenges_data = {}
+        self.scraping_in_progress = False
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
 
+    # ------------------- Scraping Methods -------------------
     def fetch_challenges_list(self):
         try:
             url = f"{self.base_url}/inscription/defis/liste"
@@ -76,35 +78,39 @@ class NuitInfoScraper:
         return True
 
     def fetch_all_data(self):
-        print("Fetching all data...")
-        challenges = self.fetch_challenges_list()
-        self.challenges_data = {c['id']: c for c in challenges}
-        all_teams = {}
-        for challenge in challenges:
-            teams = self.fetch_teams_for_challenge(challenge['id'], challenge['name'])
-            for team in teams:
-                name = team['name']
-                if name not in all_teams:
-                    all_teams[name] = {
-                        'projects': [],
-                        'total_projects': 0,
-                        'completed_projects': 0,
-                        'progress': 0,
-                        'last_updated': datetime.now().isoformat()
-                    }
-                if not any(p['challenge_id'] == team['challenge_id'] for p in all_teams[name]['projects']):
-                    all_teams[name]['projects'].append({
-                        'name': team['challenge_name'],
-                        'challenge_id': team['challenge_id'],
-                        'completed': False
-                    })
-        for team_name, data in all_teams.items():
-            data['total_projects'] = len(data['projects'])
-            data['progress'] = 0
-        self.teams_data = all_teams
-        self.save_to_json()
-        print(f"Completed fetching. Total teams: {len(all_teams)}")
-        return all_teams
+        print("Starting full data fetch...")
+        self.scraping_in_progress = True
+        try:
+            challenges = self.fetch_challenges_list()
+            self.challenges_data = {c['id']: c for c in challenges}
+            all_teams = {}
+            for challenge in challenges:
+                teams = self.fetch_teams_for_challenge(challenge['id'], challenge['name'])
+                for team in teams:
+                    name = team['name']
+                    if name not in all_teams:
+                        all_teams[name] = {
+                            'projects': [],
+                            'total_projects': 0,
+                            'completed_projects': 0,
+                            'progress': 0,
+                            'last_updated': datetime.now().isoformat()
+                        }
+                    if not any(p['challenge_id'] == team['challenge_id'] for p in all_teams[name]['projects']):
+                        all_teams[name]['projects'].append({
+                            'name': team['challenge_name'],
+                            'challenge_id': team['challenge_id'],
+                            'completed': False
+                        })
+            for team_name, data in all_teams.items():
+                data['total_projects'] = len(data['projects'])
+                data['progress'] = 0
+            self.teams_data = all_teams
+            self.save_to_json()
+            print(f"Completed fetching. Total teams: {len(all_teams)}")
+            return all_teams
+        finally:
+            self.scraping_in_progress = False
 
     def save_to_json(self):
         data = {
@@ -125,15 +131,19 @@ class NuitInfoScraper:
     def get_leaderboard(self):
         return dict(sorted(self.teams_data.items(), key=lambda x: x[1]['total_projects'], reverse=True))
 
-
 # ---------------- Flask Setup ----------------
 app = Flask(__name__, static_folder='.', static_url_path='')
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
 scraper = NuitInfoScraper()
 scraper.load_from_json()
 
-# Serve static HTML/CSS/JS files
+# If no data exists, fetch synchronously on startup
+if not scraper.teams_data:
+    print("No local data found, fetching synchronously...")
+    scraper.fetch_all_data()
+
+# ---------------- Routes ----------------
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
@@ -142,9 +152,10 @@ def index():
 def static_files(path):
     return send_from_directory('.', path)
 
-# API routes
 @app.route('/api/teams')
 def api_teams():
+    if scraper.scraping_in_progress and not scraper.teams_data:
+        return jsonify({"status": "loading", "teams": {}, "challenges": {}})
     return jsonify({'teams': scraper.teams_data, 'challenges': scraper.challenges_data})
 
 @app.route('/api/refresh')
@@ -158,7 +169,5 @@ def api_refresh():
 def api_leaderboard():
     return jsonify(scraper.get_leaderboard())
 
-
 if __name__ == "__main__":
-    threading.Thread(target=scraper.fetch_all_data, daemon=True).start()
     app.run(debug=False, port=5000, use_reloader=False)
