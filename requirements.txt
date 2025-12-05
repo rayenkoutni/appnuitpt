@@ -12,3 +12,9 @@ Flask
 gunicorn
 
 flask-cors
+
+
+
+Flask-CORS>=3.0
+
+beautifulsoup4>=4.12
